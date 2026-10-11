@@ -1,0 +1,33 @@
+{
+  "name": "yashima-timer",
+  "productName": "Yashima Timer",
+  "version": "2.3.0",
+  "description": "Yashima Timer",
+  "author": "azalea-mosu",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "io.github.azalea-mosu.yashima-timer",
+    "productName": "Yashima Timer",
+    "files": [
+      "main.js",
+      "index.html",
+      "vendor/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  }
+}
