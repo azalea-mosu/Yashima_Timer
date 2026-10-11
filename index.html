@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Yashima Timer 2.3.0</title>
+    <!-- フォント・ライブラリはすべて vendor/ に同梱（オフライン動作） -->
+    <link href="vendor/fonts.css" rel="stylesheet">
+
+    <style>
+        /* 時計表示のフォント（設定画面から変更） */
+        :root {
+            --font-ja: 'Noto Serif JP', 'Yu Mincho', serif;
+            --font-num: 'Orbitron', sans-serif;
+            --font-flip: 'Barlow Condensed', sans-serif;  /* Live のフリップ数字 */
+            --flip-w: 0.8em;                              /* フリップ1枚の幅（フォントに合わせて自動計算） */
+            --lit: #ffe45c;                               /* 時計の数字・時計内ラベルの色（他より明るく） */
+            --glow: 0 0 0.06em rgba(255, 220, 60, 0.9), 0 0 0.22em rgba(255, 190, 0, 0.55);
+        }
+
+        html, body {
+            background-color: #000 !important;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        /* 元のレイアウトを等倍で組み、ウィンドウに合わせて丸ごと拡大縮小する */
+        #stage {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: max-content;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 20px;
+            transform-origin: 0 0;
+        }
+
+        .align-left { margin-right: auto; margin-left: 0; }
+
+        .clock-unit { display: flex; align-items: center; gap: 20px; }
+        .clock-unit[hidden] { display: none; }
+
+        .outer-label {
+            color: #ffcc00; font-family: var(--font-ja); font-weight: 900;
+            font-size: 32px; letter-spacing: 0.05em; display: flex; align-items: center; white-space: nowrap;
+        }
+
+        /* 両脇の縦線は文字ではなく枠線として描き、日本語＋英語の2行分の高さに伸ばす */
+        .outer-label::before, .outer-label::after {
+            content: ""; align-self: stretch; width: 3px; margin: 0 10px;
+            background: #ffcc00; opacity: 0.8;
+        }
+
+        .outer-label span { display: block; font-size: 12px; font-family: var(--font-num); text-align: center; margin-top: -5px; }
+
+        .label-text-wrapper { display: flex; flex-direction: column; align-items: center; }
+
+        .outer-label.large-label { font-size: 64px; letter-spacing: 0.1em; }
+        .outer-label.large-label span { font-size: 18px; margin-top: 2px; }
+        .outer-label.large-label::before, .outer-label.large-label::after { width: 4px; margin: 0 14px; }
+
+        .outer-clip {
+            background-color: #ffcc00; display: inline-block;
+            clip-path: polygon( 0% 0%, 250px 0%, 265px 15px, 100% 15px, 100% 100%, 65px 100%, 25px calc(100% - 30px), 25px calc(100% - 100px), 0% 60px );
+        }
+
+        .inner-clip {
+            background-color: #000; position: relative; text-align: center;
+            clip-path: polygon( 15px 1px, 234px 1px, 249px 16px, calc(100% - 15px) 16px, calc(100% - 15px) calc(100% - 1px), 85px calc(100% - 1px), 40px calc(100% - 35px), 40px calc(100% - 105px), 15px 55px );
+        }
+
+        .main-clock { zoom: 1.25; }   /* Live の時計（枠ごと）だけ 1.25 倍。日本標準時ラベルは対象外 */
+        .main-clock .inner-clip { padding: 45px 60px 25px 60px; }
+        .sub-clock { zoom: 0.75; }   /* transform だと縮小前の幅が残ってラベルとの間が空くので zoom で縮小 */
+
+        /* GMT ロゴ（上辺は中央が下がり、下辺は中央が上がった枠） */
+        .tz-logo { height: 56px; width: auto; display: block; overflow: visible; }
+        .tz-logo path { fill: none; stroke: #ffcc00; stroke-width: 4; stroke-linejoin: miter; }
+        .tz-logo text { fill: #ffcc00; font-family: var(--font-num); font-weight: 700; }  /* 文字サイズは枠に合わせて自動計算 */
+        .sub-clock .inner-clip { padding: 45px 60px 25px 60px; }
+
+        .jst-label { position: absolute; top: 10px; left: 25px; color: var(--lit); text-shadow: var(--glow); font-family: var(--font-num); font-size: 28px; font-weight: 900; letter-spacing: 0.1em; line-height: 1; }
+        .tick { font-size: 5.6rem; font-family: var(--font-flip); font-weight: 700; display: inline-flex; align-items: center; }
+
+        /* ---------- フリップ数字（上下にめくれる動きだけ。横方向には動かない） ---------- */
+        .flap {
+            position: relative; display: inline-block;
+            width: var(--flip-w); height: 1.15em; margin: 0 0.015em;
+        }
+        .flap-half {
+            position: absolute; inset: 0;
+            line-height: 1.15em; text-align: center;
+            color: var(--lit); text-shadow: var(--glow); background: #000;
+            backface-visibility: hidden;
+            transform-origin: 50% 50%;          /* 中央の折り目を軸に回す */
+        }
+        /* 上半分・下半分だけを見せる（左右・外側は発光がはみ出せるよう少し広めに） */
+        .flap-half.top    { clip-path: inset(-0.3em -0.3em 50% -0.3em); }
+        .flap-half.bottom { clip-path: inset(50% -0.3em -0.3em -0.3em); }
+        .flap-half.flip   { visibility: hidden; z-index: 2; }
+        .flap-half.flip.moving { visibility: visible; }
+        .tick-group { display: inline-flex; align-items: center; }
+        .tick-label { display: inline-block; margin: 0 0.15em 0 0.12em; font-size: 0.32em; color: #ffcc00; line-height: 1.2; font-family: var(--font-ja); font-weight: 900; }
+        .tick-label .unit-en { font-family: var(--font-num); } /* m d h s は Japan Standard Time と同じフォント */
+
+        /* ---------- 7セグメント表示（Countdown / GMT） ---------- */
+        .seg {
+            display: inline-flex; align-items: flex-end; gap: 14px;
+            height: 100px; margin: 0 10px;
+            transform: skewX(-7deg);
+        }
+        .seg svg { height: 100%; width: auto; display: block; overflow: visible; }
+        .seg polygon, .seg rect { fill: #2a2200; }      /* 消灯セグメント（うっすら見せる） */
+        .seg .on { fill: var(--lit); }                  /* 点灯セグメント */
+        .seg svg { filter: drop-shadow(0 0 3px rgba(255, 220, 60, 0.75)) drop-shadow(0 0 10px rgba(255, 190, 0, 0.35)); }
+        .seg .sep { margin: 0 -4px; }
+
+        /* ---------- 操作UI（マウスを動かした時だけ表示） ---------- */
+        body.idle { cursor: none; }
+
+        #settings-btn {
+            position: fixed; right: 16px; bottom: 16px; z-index: 10;
+            background: #000; color: #ffcc00; border: 2px solid #ffcc00;
+            font: 700 14px 'Orbitron', sans-serif; letter-spacing: 0.1em;
+            padding: 8px 14px; cursor: pointer;
+            transition: opacity 0.3s;
+        }
+        #settings-btn:hover { background: #ffcc00; color: #000; }
+        body.idle #settings-btn { opacity: 0; pointer-events: none; }
+
+        #settings {
+            position: fixed; inset: 0; z-index: 20;
+            display: flex; align-items: center; justify-content: center;
+            background: rgba(0, 0, 0, 0.75);
+        }
+        #settings[hidden] { display: none; }
+
+        .panel {
+            background: #000; color: #ffcc00; border: 2px solid #ffcc00;
+            padding: 24px 28px; width: min(460px, calc(100vw - 32px)); box-sizing: border-box;
+            font-family: 'Noto Serif JP', 'Yu Mincho', serif;
+            clip-path: polygon(0 0, calc(100% - 24px) 0, 100% 24px, 100% 100%, 24px 100%, 0 calc(100% - 24px));
+        }
+        .panel h2 { margin: 0 0 4px; font-size: 22px; letter-spacing: 0.1em; }
+        .panel h2 small { display: block; font: 700 11px 'Orbitron', sans-serif; letter-spacing: 0.2em; opacity: 0.8; }
+        .panel label { display: block; margin-top: 16px; font-size: 14px; }
+        .panel input[type="text"], .panel input[type="datetime-local"], .panel select {
+            display: block; width: 100%; box-sizing: border-box; margin-top: 4px;
+            background: #000; color: #ffcc00; border: 1px solid #ffcc00; padding: 8px;
+            font: 16px 'Noto Serif JP', 'Yu Mincho', serif; color-scheme: dark;
+        }
+        .panel input:focus { outline: 2px solid #ffcc00; outline-offset: 1px; }
+        .panel .check { display: flex; align-items: center; gap: 8px; }
+        .panel .check input { accent-color: #ffcc00; width: 18px; height: 18px; margin: 0; }
+        .panel { max-height: calc(100vh - 32px); overflow-y: auto; }
+        .panel select { cursor: pointer; }
+        .panel .custom-font[hidden] { display: none; }
+        .panel .font-preview {
+            margin-top: 14px; padding: 10px 12px; border: 1px dashed rgba(255, 204, 0, 0.5);
+            display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; overflow: hidden;
+        }
+        .panel .font-preview .ja { font-size: 26px; font-weight: 900; }
+        .panel .font-preview .num { font-size: 26px; font-weight: 700; }
+        .panel .font-preview .flip { font-size: 34px; font-weight: 700; line-height: 1; }
+        .panel .hint { margin: 16px 0 0; font-size: 12px; opacity: 0.7; line-height: 1.6; }
+        .buttons { display: flex; gap: 8px; margin-top: 22px; }
+        .buttons button {
+            flex: 1; background: #000; color: #ffcc00; border: 1px solid #ffcc00;
+            padding: 10px 0; font: 900 14px 'Noto Serif JP', 'Yu Mincho', serif; cursor: pointer;
+        }
+        .buttons button:hover { background: #332900; }
+        .buttons button.primary { background: #ffcc00; color: #000; }
+    </style>
+</head>
+<body>
+<div id="stage">
+
+    <div class="clock-unit align-left">
+        <div class="outer-label large-label">
+            <div class="label-text-wrapper">日本標準時<span>Japan Standard Time</span></div>
+        </div>
+    </div>
+
+    <div class="main-clock outer-clip">
+        <div class="inner-clip">
+            <div class="jst-label">Live</div>
+            <div class="tick" id="live-clock">
+                <div class="tick-group"><span class="flap" data-key="m1"></span><span class="flap" data-key="m2"></span><span class="tick-label"><span class="unit-en">m</span><br>月</span></div>
+                <div class="tick-group"><span class="flap" data-key="d1"></span><span class="flap" data-key="d2"></span><span class="tick-label"><span class="unit-en">d</span><br>日</span></div>
+                <div class="tick-group"><span class="flap" data-key="h1"></span><span class="flap" data-key="h2"></span><span class="tick-label"><span class="unit-en">h</span><br>時</span></div>
+                <div class="tick-group"><span class="flap" data-key="min1"></span><span class="flap" data-key="min2"></span><span class="tick-label"><span class="unit-en">m</span><br>分</span></div>
+                <div class="tick-group"><span class="flap" data-key="s1"></span><span class="flap" data-key="s2"></span><span class="tick-label"><span class="unit-en">s</span><br>秒</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="clock-unit" id="countdown-unit">
+        <div class="outer-label">
+            <div class="label-text-wrapper"><div id="cd-label-ja"></div><span id="cd-label-en"></span></div>
+        </div>
+        <svg class="tz-logo" data-text="MST"></svg>
+        <div class="sub-clock outer-clip">
+            <div class="inner-clip">
+                <div class="jst-label">Countdown</div>
+                <div class="seg" id="cd-seg"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="clock-unit" id="gmt-unit">
+        <div class="outer-label">
+            <div class="label-text-wrapper">世界標準時<span>Greenwich Mean Time</span></div>
+        </div>
+        <svg class="tz-logo" data-text="GMT"></svg>
+        <div class="sub-clock outer-clip">
+            <div class="inner-clip">
+                <div class="jst-label">GMT</div>
+                <div class="seg" id="gmt-seg"></div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+    <button id="settings-btn" type="button">SETTINGS</button>
+
+    <div id="settings" hidden>
+        <form class="panel" id="settings-form">
+            <h2>設定<small>CONFIGURATION</small></h2>
+            <label>カウントダウン名（日本語）
+                <input type="text" name="labelJa" maxlength="20" required>
+            </label>
+            <label>カウントダウン名（英語）
+                <input type="text" name="labelEn" maxlength="40">
+            </label>
+            <label>目標日時
+                <input type="datetime-local" name="target" step="1" required>
+            </label>
+            <label class="check">
+                <input type="checkbox" name="showGmt"> 世界標準時を表示する
+            </label>
+            <label>日本語のフォント
+                <select name="fontJa" data-custom="fontJaCustom">
+                    <optgroup label="同梱（オフラインで確実に表示）">
+                        <option value="Noto Serif JP">Noto Serif JP（標準）</option>
+                        <option value="Shippori Mincho B1">しっぽり明朝 B1</option>
+                        <option value="Zen Old Mincho">Zen Old Mincho</option>
+                    </optgroup>
+                    <optgroup label="PC内蔵（Windows）">
+                        <option value="Yu Mincho">游明朝</option>
+                        <option value="MS Mincho">MS 明朝</option>
+                        <option value="BIZ UDPMincho">BIZ UDP明朝</option>
+                        <option value="Yu Gothic">游ゴシック</option>
+                        <option value="Meiryo">メイリオ</option>
+                    </optgroup>
+                    <option value="">その他（フォント名を入力）</option>
+                </select>
+                <input type="text" class="custom-font" name="fontJaCustom" placeholder="例: HGS明朝E" hidden>
+            </label>
+            <label>数字・英字のフォント
+                <select name="fontNum" data-custom="fontNumCustom">
+                    <optgroup label="同梱（オフラインで確実に表示）">
+                        <option value="Orbitron">Orbitron（標準）</option>
+                        <option value="Michroma">Michroma</option>
+                        <option value="Share Tech Mono">Share Tech Mono</option>
+                    </optgroup>
+                    <optgroup label="PC内蔵（Windows）">
+                        <option value="Consolas">Consolas</option>
+                        <option value="Arial Black">Arial Black</option>
+                        <option value="Impact">Impact</option>
+                        <option value="Segoe UI">Segoe UI</option>
+                    </optgroup>
+                    <option value="">その他（フォント名を入力）</option>
+                </select>
+                <input type="text" class="custom-font" name="fontNumCustom" placeholder="例: Bahnschrift" hidden>
+            </label>
+            <label>Live の数字のフォント
+                <select name="fontFlip" data-custom="fontFlipCustom">
+                    <optgroup label="同梱（縦長）">
+                        <option value="Barlow Condensed">Barlow Condensed（標準）</option>
+                        <option value="Oswald">Oswald</option>
+                        <option value="Saira Extra Condensed">Saira Extra Condensed</option>
+                    </optgroup>
+                    <optgroup label="同梱（横長）">
+                        <option value="Orbitron">Orbitron</option>
+                    </optgroup>
+                    <optgroup label="PC内蔵（Windows）">
+                        <option value="Bahnschrift Condensed">Bahnschrift Condensed</option>
+                        <option value="Arial Narrow">Arial Narrow</option>
+                        <option value="Impact">Impact</option>
+                    </optgroup>
+                    <option value="">その他（フォント名を入力）</option>
+                </select>
+                <input type="text" class="custom-font" name="fontFlipCustom" placeholder="例: Agency FB" hidden>
+            </label>
+            <div class="font-preview"><span class="ja">日本標準時</span><span class="num">Live</span><span class="flip">1003 1829</span></div>
+            <p class="hint">ダブルクリック / F キー：フルスクリーン切替　S キー：この設定画面</p>
+            <div class="buttons">
+                <button type="button" id="reset-btn">初期値に戻す</button>
+                <button type="button" id="cancel-btn">キャンセル</button>
+                <button type="submit" class="primary">保存</button>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        // ---------- 設定（ブラウザの localStorage に保存） ----------
+        const STORAGE_KEY = 'yashima-timer-settings';
+        const DEFAULTS = {
+            labelJa: '卒修論発表',
+            labelEn: 'Presentation',
+            target: '2027-02-02T12:00:00',
+            showGmt: true,
+            fontJa: 'Noto Serif JP',
+            fontNum: 'Orbitron',
+            fontFlip: 'Barlow Condensed'
+        };
+
+        // フォント名を CSS の font-family 値にする（見つからない時は標準フォントで表示）
+        const fontStack = (name, fallback) =>
+            (name ? `"${name.replace(/["\\]/g, '')}", ` : '') + fallback;
+        const fontJaStack = (name) => fontStack(name, "'Noto Serif JP', 'Yu Mincho', serif");
+        const fontNumStack = (name) => fontStack(name, "'Orbitron', sans-serif");
+        const fontFlipStack = (name) => fontStack(name, "'Barlow Condensed', sans-serif");
+
+        // フリップ1枚の幅を、選んだフォントの一番広い数字に合わせる
+        const measureCtx = document.createElement('canvas').getContext('2d');
+        function updateFlipWidth() {
+            const font = `700 100px ${fontFlipStack(settings.fontFlip)}`;
+            document.fonts.load(font, '0123456789').catch(() => {}).then(() => {
+                measureCtx.font = font;
+                let w = 0;
+                // 文字送り幅ではなく、実際にインクが乗る範囲（左右の余白を除く）で測る
+                for (const d of '0123456789') {
+                    const m = measureCtx.measureText(d);
+                    w = Math.max(w, m.actualBoundingBoxLeft + m.actualBoundingBoxRight);
+                }
+                document.documentElement.style.setProperty('--flip-w', (w / 100 + 0.04).toFixed(3) + 'em');
+            });
+        }
+
+        function loadSettings() {
+            try {
+                const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+                return Object.assign({}, DEFAULTS, saved);
+            } catch (e) {
+                return Object.assign({}, DEFAULTS);
+            }
+        }
+
+        function saveSettings(s) {
+            try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch (e) { /* 保存できなくても表示には反映する */ }
+        }
+
+        let settings = loadSettings();
+        let countdownTarget = new Date(settings.target);
+
+        function applySettings() {
+            document.getElementById('cd-label-ja').textContent = settings.labelJa;
+            document.getElementById('cd-label-en').textContent = settings.labelEn;
+            document.getElementById('gmt-unit').hidden = !settings.showGmt;
+            document.documentElement.style.setProperty('--font-ja', fontJaStack(settings.fontJa));
+            document.documentElement.style.setProperty('--font-num', fontNumStack(settings.fontNum));
+            document.documentElement.style.setProperty('--font-flip', fontFlipStack(settings.fontFlip));
+            updateFlipWidth();
+            fitLogoTexts();
+            countdownTarget = new Date(settings.target);
+        }
+        applySettings();
+
+        // ---------- 時計 ----------
+        const splitNum = (num) => String(num).padStart(2, '0').slice(-2).split('');
+
+        // ---------- フリップ数字 ----------
+        // 静止用の上下半分 2 枚と、めくれる上下半分 2 枚を重ねる。
+        // 古い上半分が折り目まで倒れ → 新しい下半分が折り目から降りてくる（回転は横軸のみ）
+        const FLIP_MS = 160;   // 半分あたりの時間
+
+        function buildFlap(el) {
+            el.innerHTML = '';
+            const make = (cls) => { const h = document.createElement('span'); h.className = 'flap-half ' + cls; el.appendChild(h); return h; };
+            el.parts = { top: make('top'), bottom: make('bottom'), flipTop: make('top flip'), flipBottom: make('bottom flip') };
+            el.value = null;
+        }
+
+        function setFlap(el, v) {
+            if (el.value === v) return;
+            const { top, bottom, flipTop, flipBottom } = el.parts;
+            (el.anims || []).forEach(a => a.cancel());   // 前のめくれが途中なら打ち切る
+            const old = el.value;
+            el.value = v;
+            if (old === null || document.hidden) {     // 初回・非表示中はアニメなしで差し替え
+                top.textContent = bottom.textContent = v;
+                return;
+            }
+            top.textContent = v;                        // 奥：新しい上半分
+            bottom.textContent = old;                   // 奥：古い下半分（めくれ終わるまで）
+            flipTop.textContent = old;                  // 手前：古い上半分が倒れる
+            flipBottom.textContent = v;                 // 手前：新しい下半分が降りてくる
+            flipTop.classList.add('moving');
+            flipBottom.classList.add('moving');
+            const a1 = flipTop.animate([{ transform: 'rotateX(0deg)' }, { transform: 'rotateX(-90deg)' }],
+                                       { duration: FLIP_MS, easing: 'ease-in', fill: 'forwards' });
+            const a2 = flipBottom.animate([{ transform: 'rotateX(90deg)' }, { transform: 'rotateX(0deg)' }],
+                                          { duration: FLIP_MS, delay: FLIP_MS, easing: 'ease-out', fill: 'backwards' });
+            const anims = el.anims = [a1, a2];
+            a2.finished.then(() => {
+                if (el.anims !== anims) return;         // 次のめくれが始まっていたら何もしない
+                bottom.textContent = v;
+                flipTop.classList.remove('moving');
+                flipBottom.classList.remove('moving');
+                a1.cancel(); a2.cancel();
+            }).catch(() => {});
+        }
+
+        const liveFlaps = {};
+        document.querySelectorAll('#live-clock .flap').forEach(el => { buildFlap(el); liveFlaps[el.dataset.key] = el; });
+
+        // 日本標準時 (JST)
+        function updateLive() {
+            const now = new Date();
+            const vals = {
+                m: now.getMonth() + 1, d: now.getDate(), h: now.getHours(), min: now.getMinutes(), s: now.getSeconds()
+            };
+            for (const [k, n] of Object.entries(vals)) {
+                const [c1, c2] = splitNum(n);
+                setFlap(liveFlaps[k + '1'], c1);
+                setFlap(liveFlaps[k + '2'], c2);
+            }
+        }
+        updateLive();
+        setInterval(updateLive, 100);
+
+        // ---------- 7セグメント表示 ----------
+        // 1文字 = SVG 1枚。全セグメントを描いておき、点灯するものに class="on" を付ける
+        const SVG_NS = 'http://www.w3.org/2000/svg';
+        const SEG_W = 56, SEG_H = 100, SEG_T = 11, SEG_GAP = 1.5;
+        const L = SEG_T / 2, R = SEG_W - SEG_T / 2, TOP = SEG_T / 2, MID = SEG_H / 2, BOT = SEG_H - SEG_T / 2, CX = SEG_W / 2;
+
+        // 両端がとがった六角形のセグメント
+        const hSeg = (x1, x2, y) => {
+            const h = SEG_T / 2; x1 += SEG_GAP; x2 -= SEG_GAP;
+            return [[x1, y], [x1 + h, y - h], [x2 - h, y - h], [x2, y], [x2 - h, y + h], [x1 + h, y + h]];
+        };
+        const vSeg = (x, y1, y2) => {
+            const h = SEG_T / 2; y1 += SEG_GAP; y2 -= SEG_GAP;
+            return [[x, y1], [x + h, y1 + h], [x + h, y2 - h], [x, y2], [x - h, y2 - h], [x - h, y1 + h]];
+        };
+
+        const CELL_TYPES = {
+            digit: {
+                segs: { a: hSeg(L, R, TOP), b: vSeg(R, TOP, MID), c: vSeg(R, MID, BOT), d: hSeg(L, R, BOT),
+                        e: vSeg(L, MID, BOT), f: vSeg(L, TOP, MID), g: hSeg(L, R, MID) },
+                chars: { '0': 'abcdef', '1': 'bc', '2': 'abdeg', '3': 'abcdg', '4': 'bcfg', '5': 'acdfg',
+                         '6': 'acdefg', '7': 'abc', '8': 'abcdefg', '9': 'abcdfg', ' ': '' }
+            },
+            // 先頭の T（上の横棒＋中央の縦棒）
+            letterT: {
+                segs: { a: hSeg(L, R, TOP), v: vSeg(CX, TOP, BOT) },
+                chars: { 'T': 'av' }
+            },
+            // ± 用（中段の横棒＋短い縦棒）
+            sign: {
+                segs: { g: hSeg(L + 4, R - 4, MID), p: vSeg(CX, MID - (R - L) / 2 + 4, MID + (R - L) / 2 - 4) },
+                chars: { '+': 'gp', '-': 'g', ' ': '' }
+            }
+        };
+
+        function makeCell(type) {
+            const svg = document.createElementNS(SVG_NS, 'svg');
+            const cell = { type, el: svg, segs: {}, ch: null };
+            if (type === 'colon' || type === 'dot') {
+                const w = 16;
+                svg.setAttribute('viewBox', `0 0 ${w} ${SEG_H}`);
+                svg.classList.add('sep');
+                const ys = type === 'colon' ? [SEG_H * 0.3, SEG_H * 0.7] : [BOT];
+                ys.forEach(y => {
+                    const dot = document.createElementNS(SVG_NS, 'rect');
+                    dot.setAttribute('x', (w - SEG_T) / 2); dot.setAttribute('y', y - SEG_T / 2);
+                    dot.setAttribute('width', SEG_T); dot.setAttribute('height', SEG_T);
+                    dot.classList.add('on');
+                    svg.appendChild(dot);
+                });
+                return cell;
+            }
+            svg.setAttribute('viewBox', `0 0 ${SEG_W} ${SEG_H}`);
+            for (const [name, pts] of Object.entries(CELL_TYPES[type].segs)) {
+                const poly = document.createElementNS(SVG_NS, 'polygon');
+                poly.setAttribute('points', pts.map(p => p.join(',')).join(' '));
+                svg.appendChild(poly);
+                cell.segs[name] = poly;
+            }
+            return cell;
+        }
+
+        function setCell(cell, ch) {
+            if (cell.ch === ch || !(cell.type in CELL_TYPES)) return;
+            const lit = CELL_TYPES[cell.type].chars[ch] || '';
+            for (const [name, poly] of Object.entries(cell.segs)) {
+                const on = lit.includes(name);
+                poly.classList.toggle('on', on);
+                if (on) cell.el.appendChild(poly);   // 点灯セグメントを最前面に（交差する消灯セグメントに隠されないように）
+            }
+            cell.ch = ch;
+        }
+
+        const cellType = (ch) => ch === ':' ? 'colon' : ch === '.' ? 'dot' : ch === 'T' ? 'letterT' : /[0-9 ]/.test(ch) ? 'digit' : 'sign';
+
+        // 文字列を表示（桁の構成が変わった時だけ作り直す）
+        function renderSeg(container, text) {
+            const chars = [...text];
+            const layout = chars.map(cellType).join(',');
+            if (container.dataset.layout !== layout) {
+                container.textContent = '';
+                container.cells = chars.map(ch => {
+                    const cell = makeCell(cellType(ch));
+                    container.appendChild(cell.el);
+                    return cell;
+                });
+                container.dataset.layout = layout;
+            }
+            chars.forEach((ch, i) => setCell(container.cells[i], ch));
+        }
+
+        const pad2 = (n) => String(n).padStart(2, '0');
+
+        // 世界標準時 (GMT/UTC)  hh:mm:ss
+        function gmtText(now) {
+            return `${pad2(now.getUTCHours())}:${pad2(now.getUTCMinutes())}:${pad2(now.getUTCSeconds())}`;
+        }
+
+        // カウントダウン  T-dd:hh:mm:ss.xx（目標日時を過ぎたら T+ でカウントアップ）
+        function countdownText(now) {
+            const diff = (countdownTarget - now) || 0;
+            const a = Math.min(Math.abs(diff), 100 * 86400000 - 10);  // 100日以上は 99:23:59:59.99 で止める
+            const d = Math.floor(a / 86400000);
+            const h = Math.floor(a / 3600000) % 24;
+            const m = Math.floor(a / 60000) % 60;
+            const s = Math.floor(a / 1000) % 60;
+            const cs = Math.floor(a / 10) % 100;
+            return `T${diff > 0 ? '-' : '+'}${pad2(d)}:${pad2(h)}:${pad2(m)}:${pad2(s)}.${pad2(cs)}`;
+        }
+
+        // ---------- GMT / MST ロゴ ----------
+        // 四隅を面取りし、上辺は中央が下がり・下辺は中央が上がった枠。文字は枠内いっぱいに合わせる
+        const LOGO_W = 160, LOGO_H = 100;
+        const LOGO_PATH = 'M12,2 H38 L54,18 H106 L122,2 H148 L158,12 V88 L148,98 H122 L106,82 H54 L38,98 H12 L2,88 V12 Z';
+        const LOGO_INNER = { x1: 9, x2: 151, y1: 24, y2: 76 };   // 文字を収める範囲（枠線の内側）
+
+        document.querySelectorAll('.tz-logo').forEach(svg => {
+            svg.setAttribute('viewBox', `0 0 ${LOGO_W} ${LOGO_H}`);
+            svg.setAttribute('aria-label', svg.dataset.text);
+            const path = document.createElementNS(SVG_NS, 'path');
+            path.setAttribute('d', LOGO_PATH);
+            const text = document.createElementNS(SVG_NS, 'text');
+            text.textContent = svg.dataset.text;
+            svg.append(path, text);
+        });
+
+        // 選んだフォントの実際の字面（インク）の大きさを測り、枠の内側にぴったり収める
+        function fitLogoTexts() {
+            const font = `700 100px ${fontNumStack(settings.fontNum)}`;
+            document.fonts.load(font, 'GMST').catch(() => {}).then(() => {
+                measureCtx.font = font;
+                document.querySelectorAll('.tz-logo').forEach(svg => {
+                    const m = measureCtx.measureText(svg.dataset.text);
+                    const inkW = m.actualBoundingBoxLeft + m.actualBoundingBoxRight;
+                    const inkH = m.actualBoundingBoxAscent + m.actualBoundingBoxDescent;
+                    const { x1, x2, y1, y2 } = LOGO_INNER;
+                    const k = 0.6 * Math.min((x2 - x1) / inkW, (y2 - y1) / inkH);   // 100px あたりの倍率（枠いっぱいの 6 割）
+                    const text = svg.querySelector('text');
+                    text.setAttribute('font-size', (100 * k).toFixed(2));
+                    text.setAttribute('x', ((x1 + x2) / 2 - (m.actualBoundingBoxRight - m.actualBoundingBoxLeft) * k / 2).toFixed(2));
+                    text.setAttribute('y', ((y1 + y2) / 2 + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) * k / 2).toFixed(2));
+                });
+            });
+        }
+        fitLogoTexts();
+
+        const cdSeg = document.getElementById('cd-seg');
+        const gmtSeg = document.getElementById('gmt-seg');
+        (function segLoop() {
+            const now = new Date();
+            renderSeg(cdSeg, countdownText(now));
+            renderSeg(gmtSeg, gmtText(now));
+            requestAnimationFrame(segLoop);
+        })();
+
+        // ---------- ウィンドウサイズに合わせて #stage 全体を拡大縮小（縦横比は維持して中央寄せ） ----------
+        const stage = document.getElementById('stage');
+        const PAD_X = 60, PAD_Y = 40; // 等倍時の余白 (px)
+
+        function fitStage() {
+            stage.style.transform = 'none';
+            const base = stage.getBoundingClientRect();
+            let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+            // 縮小された sub-clock も含め、見た目上の範囲を測る
+            stage.querySelectorAll('.outer-label, .outer-clip, .tz-logo').forEach(el => {
+                const q = el.getBoundingClientRect();
+                if (!q.width) return; // 非表示の要素は除外
+                l = Math.min(l, q.left); t = Math.min(t, q.top);
+                r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+            });
+            l -= base.left + PAD_X; t -= base.top + PAD_Y;
+            r -= base.left - PAD_X; b -= base.top - PAD_Y;
+
+            const w = r - l, h = b - t;
+            const k = Math.min(window.innerWidth / w, window.innerHeight / h);
+            const tx = (window.innerWidth - w * k) / 2 - l * k;
+            const ty = (window.innerHeight - h * k) / 2 - t * k;
+            stage.style.transform = `translate(${tx}px, ${ty}px) scale(${k})`;
+        }
+
+        window.addEventListener('resize', fitStage);
+        new ResizeObserver(fitStage).observe(stage); // フリップ初期化・フォント読込・設定変更による寸法変化に追従
+        document.fonts.ready.then(fitStage);
+        fitStage();
+
+        // ---------- 操作 ----------
+        const settingsEl = document.getElementById('settings');
+        const form = document.getElementById('settings-form');
+
+        function toggleFullscreen() {
+            if (document.fullscreenElement) document.exitFullscreen();
+            else document.documentElement.requestFullscreen();
+        }
+
+        function fillForm(s) {
+            form.labelJa.value = s.labelJa;
+            form.labelEn.value = s.labelEn;
+            form.target.value = s.target;
+            form.showGmt.checked = s.showGmt;
+            setFontField(form.fontJa, s.fontJa);
+            setFontField(form.fontNum, s.fontNum);
+            setFontField(form.fontFlip, s.fontFlip);
+            updatePreview();
+        }
+
+        // 一覧にないフォント名は「その他」＋入力欄で表示
+        function setFontField(select, name) {
+            const custom = form[select.dataset.custom];
+            const listed = [...select.options].some(o => o.value && o.value === name);
+            select.value = listed ? name : '';
+            custom.value = listed ? '' : name;
+            custom.hidden = listed;
+        }
+
+        function getFontField(select) {
+            return select.value || form[select.dataset.custom].value.trim();
+        }
+
+        function updatePreview() {
+            const preview = form.querySelector('.font-preview');
+            preview.querySelector('.ja').style.fontFamily = fontJaStack(getFontField(form.fontJa));
+            preview.querySelector('.num').style.fontFamily = fontNumStack(getFontField(form.fontNum));
+            preview.querySelector('.flip').style.fontFamily = fontFlipStack(getFontField(form.fontFlip));
+        }
+
+        [form.fontJa, form.fontNum, form.fontFlip].forEach(select => {
+            select.addEventListener('change', () => {
+                const custom = form[select.dataset.custom];
+                custom.hidden = select.value !== '';
+                if (!custom.hidden) custom.focus();
+                updatePreview();
+            });
+            form[select.dataset.custom].addEventListener('input', updatePreview);
+        });
+
+        function openSettings() {
+            fillForm(settings);
+            settingsEl.hidden = false;
+            form.labelJa.focus();
+        }
+
+        function closeSettings() { settingsEl.hidden = true; }
+
+        document.getElementById('settings-btn').addEventListener('click', openSettings);
+        document.getElementById('cancel-btn').addEventListener('click', closeSettings);
+        document.getElementById('reset-btn').addEventListener('click', () => fillForm(DEFAULTS));
+        settingsEl.addEventListener('click', (e) => { if (e.target === settingsEl) closeSettings(); });
+
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            settings = {
+                labelJa: form.labelJa.value.trim(),
+                labelEn: form.labelEn.value.trim(),
+                target: form.target.value,
+                showGmt: form.showGmt.checked,
+                fontJa: getFontField(form.fontJa),
+                fontNum: getFontField(form.fontNum),
+                fontFlip: getFontField(form.fontFlip)
+            };
+            saveSettings(settings);
+            applySettings();
+            closeSettings();
+        });
+
+        document.addEventListener('dblclick', (e) => {
+            if (settingsEl.hidden) toggleFullscreen();
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (!settingsEl.hidden) {
+                if (e.key === 'Escape') closeSettings();
+                return;
+            }
+            if (e.ctrlKey || e.altKey || e.metaKey) return;
+            if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+            if (e.key === 's' || e.key === 'S') { e.preventDefault(); openSettings(); }
+        });
+
+        // マウスを3秒動かさないとカーソルと設定ボタンを隠す
+        let idleTimer;
+        function wake() {
+            document.body.classList.remove('idle');
+            clearTimeout(idleTimer);
+            idleTimer = setTimeout(() => {
+                if (settingsEl.hidden) document.body.classList.add('idle');
+            }, 3000);
+        }
+        document.addEventListener('mousemove', wake);
+        wake();
+    </script>
+</body>
+</html>
