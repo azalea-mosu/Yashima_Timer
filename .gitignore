@@ -1,0 +1,5 @@
+# npm install でダウンロードされるライブラリ（package.json から再現できるので Git には入れない）
+node_modules/
+
+# electron-builder が作る .exe などの完成品
+dist/
