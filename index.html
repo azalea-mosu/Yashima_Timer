@@ -116,7 +116,7 @@
         .seg svg { height: 100%; width: auto; display: block; overflow: visible; }
         .seg polygon, .seg rect { fill: #2a2200; }      /* 消灯セグメント（うっすら見せる） */
         .seg .on { fill: var(--lit); }                  /* 点灯セグメント */
-        .seg svg { filter: drop-shadow(0 0 3px rgba(255, 220, 60, 0.75)) drop-shadow(0 0 10px rgba(255, 190, 0, 0.35)); }
+        .seg .lit-group { filter: url(#seg-glow); }     /* 光彩は点灯セグメントだけにかける（消灯側まで光らせない） */
         .seg .sep { margin: 0 -4px; }
 
         /* ---------- 操作UI（マウスを動かした時だけ表示） ---------- */
@@ -177,6 +177,13 @@
     </style>
 </head>
 <body>
+<!-- 7セグの点灯セグメント用の光彩（.lit-group から参照） -->
+<svg width="0" height="0" style="position: absolute" aria-hidden="true">
+    <filter id="seg-glow" filterUnits="userSpaceOnUse" x="-40" y="-40" width="140" height="180">
+        <feDropShadow dx="0" dy="0" stdDeviation="1.5" flood-color="rgb(255, 220, 60)" flood-opacity="0.75"/>
+        <feDropShadow dx="0" dy="0" stdDeviation="5" flood-color="rgb(255, 190, 0)" flood-opacity="0.35"/>
+    </filter>
+</svg>
 <div id="stage">
 
     <div class="clock-unit align-left">
@@ -472,7 +479,12 @@
 
         function makeCell(type) {
             const svg = document.createElementNS(SVG_NS, 'svg');
-            const cell = { type, el: svg, segs: {}, ch: null };
+            // 消灯 → 点灯の順に重ねる（点灯セグメントが交差する消灯セグメントに隠されないように）
+            const offGroup = document.createElementNS(SVG_NS, 'g');
+            const litGroup = document.createElementNS(SVG_NS, 'g');
+            litGroup.classList.add('lit-group');
+            svg.append(offGroup, litGroup);
+            const cell = { type, el: svg, offGroup, litGroup, segs: {}, ch: null };
             if (type === 'colon' || type === 'dot') {
                 const w = 16;
                 svg.setAttribute('viewBox', `0 0 ${w} ${SEG_H}`);
@@ -483,7 +495,7 @@
                     dot.setAttribute('x', (w - SEG_T) / 2); dot.setAttribute('y', y - SEG_T / 2);
                     dot.setAttribute('width', SEG_T); dot.setAttribute('height', SEG_T);
                     dot.classList.add('on');
-                    svg.appendChild(dot);
+                    litGroup.appendChild(dot);
                 });
                 return cell;
             }
@@ -491,7 +503,7 @@
             for (const [name, pts] of Object.entries(CELL_TYPES[type].segs)) {
                 const poly = document.createElementNS(SVG_NS, 'polygon');
                 poly.setAttribute('points', pts.map(p => p.join(',')).join(' '));
-                svg.appendChild(poly);
+                offGroup.appendChild(poly);
                 cell.segs[name] = poly;
             }
             return cell;
@@ -503,7 +515,7 @@
             for (const [name, poly] of Object.entries(cell.segs)) {
                 const on = lit.includes(name);
                 poly.classList.toggle('on', on);
-                if (on) cell.el.appendChild(poly);   // 点灯セグメントを最前面に（交差する消灯セグメントに隠されないように）
+                (on ? cell.litGroup : cell.offGroup).appendChild(poly);
             }
             cell.ch = ch;
         }
